@@ -1,0 +1,23 @@
+# API Keys
+OPENAI_API_KEY=your_openai_api_key_here
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
+# Database Configuration
+DATABASE_URL=mysql+pymysql://username:password@localhost:3306/chatdb
+# 或者使用 PostgreSQL: postgresql://username:password@localhost:5432/chatdb
+
+# Vector Database Configuration
+CHROMA_PERSIST_DIRECTORY=./chroma_db
+
+# Redis Configuration (可选，用于缓存)
+REDIS_URL=redis://localhost:6379/0
+
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=8001
+DEBUG=True
+
+# RAG Configuration
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+MAX_CONTEXT_LENGTH=4000
+TOP_K_RESULTS=5 
