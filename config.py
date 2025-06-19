@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     app_name: str = "LumiLove"  # 固定为LumiLove
     app_url: str = "https://main.d3m01u43jjmlec.amplifyapp.com/"  # 您的应用URL
     
-    # 数据库配置 - 添加默认值，避免None导致的错误
-    database_url: str = os.getenv("DATABASE_URL", "jdbc:postgresql://lumilovedb1.chwuqka62eu2.ap-southeast-2.rds.amazonaws.com:5432/Lumilovedb01")
+    # 数据库配置 - 修正URL格式
+    database_url: str = os.getenv("DATABASE_URL", "postgresql://username:password@lumilovedb1.chwuqka62eu2.ap-southeast-2.rds.amazonaws.com:5432/Lumilovedb01")
     
     # 向量数据库配置
     chroma_persist_directory: str = os.getenv("CHROMA_PERSIST_DIRECTORY", "./chroma_db")
@@ -30,7 +30,13 @@ class Settings(BaseSettings):
     # RAG设置
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # 约22MB
     max_context_length: int = int(os.getenv("MAX_CONTEXT_LENGTH", "4000"))
+    # 上下文长度
     top_k_results: int = int(os.getenv("TOP_K_RESULTS", "5"))
+    
+    # Token控制配置
+    max_context_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", "1500"))
+    max_history_tokens: int = int(os.getenv("MAX_HISTORY_TOKENS", "500"))
+    show_full_prompt: bool = os.getenv("SHOW_FULL_PROMPT", "True").lower() == "true"
     
     class Config:
         env_file = ".env"

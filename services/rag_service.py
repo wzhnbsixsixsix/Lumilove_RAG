@@ -4,12 +4,15 @@ from .chat_service import chat_service
 from .openrouter_client import openrouter_client
 from config import settings
 from .character_service import character_service
+import tiktoken  # 需要安装: pip install tiktoken
 
 class RAGService:
     def __init__(self):
         self.vector_store_service = vector_store_service
         self.chat_service = chat_service
         self.openrouter_client = openrouter_client
+        # 初始化token编码器（使用GPT-4的编码器）
+        self.token_encoder = tiktoken.get_encoding("cl100k_base")
     
     async def generate_response_with_rag(self, user_id: str, session_id: str, 
                                        message: str) -> Dict[str, Any]:
@@ -99,7 +102,7 @@ class RAGService:
     def _build_context_from_retrieval(self, relevant_context: List[Dict[str, Any]]) -> str:
         """构建检索到的上下文文本"""
         if not relevant_context:
-            return "暂无相关历史对话记录。"
+            return "No relevant historical conversation records found."
         
         context_parts = []
         for i, ctx in enumerate(relevant_context, 1):
@@ -107,7 +110,7 @@ class RAGService:
             content = ctx["content"]
             # 添加调试日志
             print(f"📝 上下文 {i}: {content[:100]}... (相似度: {similarity_score:.3f})")
-            context_parts.append(f"相关对话 {i} (相似度: {similarity_score:.3f}):\n{content}")
+            context_parts.append(f"Relevant conversation {i} (similarity: {similarity_score:.3f}):\n{content}")
         
         result = "\n\n".join(context_parts)
         print(f"🔍 完整上下文:\n{result}")
@@ -116,11 +119,11 @@ class RAGService:
     def _build_recent_conversation(self, recent_history: List[Dict]) -> str:
         """构建最近的对话历史"""
         if not recent_history:
-            return "这是对话的开始。"
+            return "This is the beginning of the conversation."
         
         conversation_parts = []
         for msg in recent_history:
-            role = "用户" if msg["message_type"] == "user" else "助手"
+            role = "User" if msg["message_type"] == "user" else "Assistant"
             conversation_parts.append(f"{role}: {msg['content']}")
         
         return "\n".join(conversation_parts)
@@ -172,15 +175,18 @@ class RAGService:
                 recent_conversation=recent_conversation
             )
             
-            # 步骤5：生成AI回复
+            # 步骤5：生成AI回复（记录输出token）
             print(f"🤖 步骤5: 生成AI回复...")
             complete_response = ""
+            output_tokens = 0
+            
             async for chunk in self.openrouter_client.chat_completion_stream(
                 messages=messages,
                 max_tokens=2000,
                 temperature=0.7
             ):
                 complete_response += chunk
+                output_tokens += self._count_tokens(chunk)
                 yield {
                     "chunk": chunk,
                     "session_id": session_id,
@@ -188,15 +194,43 @@ class RAGService:
                     "sources": relevant_context
                 }
             
+            # 显示输出token统计
+            total_input_tokens = self._count_tokens(str(messages))
+            print("📤 输出TOKEN统计:")
+            print(f"   输出token: {output_tokens} tokens")
+            print(f"   预估输出成本: ${output_tokens * 0.000015:.6f} USD")  # 假设$15/1M tokens
+            print(f"   总成本: ${(total_input_tokens * 0.000003 + output_tokens * 0.000015):.6f} USD")
+            
             # 步骤6：保存到数据库和向量库
             print(f"💾 步骤6: 保存对话到数据库和向量库...")
+            
+            # 保存到关系数据库
             await self.chat_service.save_message(user_id, character_id, message, complete_response)
             
-            # 步骤7：添加到向量数据库供未来检索
+            # 保存到向量数据库 - 增加调试信息
             conversation_pair = [{"user": message, "assistant": complete_response}]
-            self.vector_store_service.add_chat_to_vector_store(
-                user_id, session_id, conversation_pair
-            )
+            print(f"🔧 准备保存到向量库: user_id={user_id}, session_id={session_id}")
+            print(f"🔧 对话内容: user='{message}', assistant='{complete_response[:50]}...'")
+            
+            try:
+                self.vector_store_service.add_chat_to_vector_store(
+                    user_id, session_id, conversation_pair
+                )
+                print(f"✅ 向量数据保存成功")
+                
+                # 立即测试搜索
+                test_results = self.vector_store_service.search_relevant_context(
+                    query=message,
+                    user_id=user_id,
+                    session_id=session_id,
+                    k=3
+                )
+                print(f"🔍 保存后立即搜索结果: {len(test_results)} 条")
+                
+            except Exception as vec_e:
+                print(f"❌ 向量数据保存失败: {vec_e}")
+                import traceback
+                traceback.print_exc()
             
             print(f"✅ 完整RAG流程完成！")
             
@@ -207,60 +241,78 @@ class RAGService:
                 "session_id": session_id
             }
 
+    def _count_tokens(self, text: str) -> int:
+        """计算文本的token数量"""
+        return len(self.token_encoder.encode(text))
+    
     def _build_complete_messages(self, user_message: str, character_prompt: str, 
                                memory_context: str, recent_conversation: str) -> List[Dict[str, str]]:
         """构建包含角色设定和记忆的完整AI提示"""
         
-        # 提取记忆中的关键信息
-        memory_facts = self._extract_memory_facts(memory_context)
-        
-        system_prompt = f"""{character_prompt}
+        system_prompt = f"""You must fulfill the following requirements simultaneously:
 
-=== 重要记忆信息 ===
-请特别注意以下从历史对话中提取的重要信息：
-{memory_facts}
+【Character Setting】
+{character_prompt}
 
-=== 详细历史记忆 ===
+Please strictly follow the above character setting for role-playing and maintain character consistency and personality.
+
+【Memory Instructions】
+- If the user asks about personal information (name, identity, etc.), you MUST find accurate answers from the following historical memories
+- Do not say you don't know or don't remember, use specific information from the historical conversations
+
+【Historical Memory】
 {memory_context}
 
-=== 最近的对话 ===
+【Recent Conversation】
 {recent_conversation}
 
-=== 重要指令 ===
-1. 首先检查"重要记忆信息"中是否有与用户问题直接相关的答案
-2. 如果用户问及姓名、身份、喜好等个人信息，必须使用历史记忆中的具体信息回答
-3. 在保持角色性格的同时，准确使用历史记忆中的事实信息
-4. 如果记忆中有明确答案，不要回避或模糊回答
+Please maintain your character's personality while accurately using historical memories to answer the user's questions."""
 
-请基于角色设定和历史记忆回复用户。"""
-
-        return [
+        messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ]
-
-    def _extract_memory_facts(self, memory_context: str) -> str:
-        """从记忆上下文中提取关键事实信息"""
-        facts = []
         
-        # 简单的关键信息提取
-        if "name is" in memory_context.lower() or "叫" in memory_context:
-            # 提取姓名相关信息
-            lines = memory_context.split('\n')
-            for line in lines:
-                if ("name is" in line.lower() or "叫" in line) and "用户:" in line:
-                    facts.append(f"• 用户姓名信息: {line.strip()}")
+        # 计算并显示token使用情况
+        self._log_token_usage(character_prompt, memory_context, recent_conversation, 
+                              user_message, system_prompt)
         
-        if "我是" in memory_context or "i am" in memory_context.lower():
-            lines = memory_context.split('\n')
-            for line in lines:
-                if ("我是" in line or "i am" in line.lower()) and "用户:" in line:
-                    facts.append(f"• 用户身份信息: {line.strip()}")
+        return messages
+    
+    def _log_token_usage(self, character_prompt: str, memory_context: str, 
+                        recent_conversation: str, user_message: str, full_system_prompt: str):
+        """详细记录token使用情况"""
         
-        if facts:
-            return "\n".join(facts)
-        else:
-            return "暂无提取到的关键事实信息"
+        # 分别计算各部分token
+        character_tokens = self._count_tokens(character_prompt)
+        memory_tokens = self._count_tokens(memory_context)
+        recent_tokens = self._count_tokens(recent_conversation)
+        user_tokens = self._count_tokens(user_message)
+        system_tokens = self._count_tokens(full_system_prompt)
+        
+        total_input_tokens = system_tokens + user_tokens
+        
+        print("=" * 60)
+        print("📊 TOKEN 使用详情")
+        print("=" * 60)
+        print(f"👤 用户消息: {user_tokens} tokens")
+        print(f"🎭 角色设定: {character_tokens} tokens")
+        print(f"🧠 历史记忆: {memory_tokens} tokens")
+        print(f"💬 最近对话: {recent_tokens} tokens")
+        print(f"📋 完整系统提示: {system_tokens} tokens")
+        print("-" * 60)
+        print(f"📥 总输入token: {total_input_tokens} tokens")
+        print(f"💰 预估输入成本: ${total_input_tokens * 0.000003:.6f} USD")  # 假设$3/1M tokens
+        print("=" * 60)
+        
+        # 显示完整prompt内容（可选，用于调试）
+        if settings.debug:
+            print("📝 完整PROMPT内容:")
+            print("-" * 40)
+            print(full_system_prompt)
+            print("-" * 40)
+            print(f"用户: {user_message}")
+            print("=" * 60)
 
     async def generate_character_response_stream(self, user_id: str, session_id: str, 
                                                message: str, character_prompt: str = ""):
@@ -331,6 +383,35 @@ class RAGService:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message}
         ]
+
+    def _optimize_context_for_tokens(self, relevant_context: List[Dict[str, Any]], 
+                                    max_context_tokens: int = 1000) -> str:
+        """优化上下文以控制token使用"""
+        
+        if not relevant_context:
+            return "暂无相关历史对话记录。"
+        
+        context_parts = []
+        current_tokens = 0
+        
+        for i, ctx in enumerate(relevant_context, 1):
+            similarity_score = ctx.get("similarity_score", 0)
+            content = ctx["content"]
+            
+            # 计算这条记录的token
+            content_tokens = self._count_tokens(content)
+            
+            # 如果加上这条记录会超过限制，就停止
+            if current_tokens + content_tokens > max_context_tokens:
+                print(f"⚠️ 上下文token限制：只使用前{i-1}条记录（{current_tokens} tokens）")
+                break
+            
+            context_parts.append(f"对话{i}(相似度{similarity_score:.2f}): {content}")
+            current_tokens += content_tokens
+        
+        result = "\n".join(context_parts)
+        print(f"✅ 最终上下文: {current_tokens} tokens")
+        return result
 
 # 全局RAG服务实例
 rag_service = RAGService()

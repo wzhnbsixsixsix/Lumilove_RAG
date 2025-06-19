@@ -123,7 +123,9 @@ class OpenRouterClient:
         """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": self.app_url,
+            "X-Title": self.app_name
         }
         
         async with httpx.AsyncClient(timeout=10.0) as client:

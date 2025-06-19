@@ -87,20 +87,15 @@ class VectorStoreService:
     
     def search_relevant_context(self, query: str, user_id: str, 
                               session_id: str = None, k: int = None) -> List[Dict[str, Any]]:
-        """搜索相关的上下文"""
+        """搜索相关的上下文 - 临时禁用session过滤进行测试"""
         if k is None:
             k = settings.top_k_results
         
-        # 构建过滤条件
-        if session_id:
-            filter_dict = {
-                "$and": [
-                    {"user_id": user_id},
-                    {"session_id": session_id}
-                ]
-            }
-        else:
-            filter_dict = {"user_id": user_id}
+        print(f"🔍 向量搜索参数: query='{query}', user_id='{user_id}', session_id='{session_id}', k={k}")
+        
+        # 临时：只使用user_id过滤，不使用session_id
+        filter_dict = {"user_id": user_id}
+        print(f"🔍 使用过滤条件: {filter_dict}")
         
         try:
             # 执行相似度搜索
