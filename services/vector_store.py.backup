@@ -1,22 +1,36 @@
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import List, Dict, Any
 import uuid
 from config import settings
+from openai import OpenAI
+import numpy as np
+
+class OpenAIEmbeddings:
+    def __init__(self, api_key: str):
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1"
+        )
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        response = self.client.embeddings.create(
+            model="text-embedding-3-small",
+            input=texts
+        )
+        return [data.embedding for data in response.data]
+    
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
 
 class VectorStoreService:
     def __init__(self):
-        # 使用标准的HuggingFace embedding模型
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=settings.embedding_model,  # "sentence-transformers/all-MiniLM-L6-v2"
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': False}
+        self.embeddings = SentenceTransformerEmbeddings(
+            model_name=settings.embedding_model
         )
-        
-        print(f"✅ 使用HuggingFace embedding模型: {settings.embedding_model}")
         
         # 初始化ChromaDB
         self.chroma_client = chromadb.PersistentClient(
@@ -24,7 +38,7 @@ class VectorStoreService:
             settings=ChromaSettings(allow_reset=True)
         )
         
-        # 创建collection
+        # 创建或获取集合
         self.collection_name = "chat_history"
         try:
             self.collection = self.chroma_client.get_collection(self.collection_name)
@@ -44,8 +58,6 @@ class VectorStoreService:
             chunk_overlap=200,
             length_function=len,
         )
-        
-        print("✅ 向量存储服务初始化完成")
     
     def add_chat_to_vector_store(self, user_id: str, session_id: str, 
                                 conversation_context: List[Dict[str, str]]):
@@ -74,16 +86,12 @@ class VectorStoreService:
             # 生成唯一ID
             ids = [str(uuid.uuid4()) for _ in documents]
             
-            try:
-                # 添加到向量数据库
-                self.vector_store.add_texts(
-                    texts=documents,
-                    metadatas=metadatas,
-                    ids=ids
-                )
-                print(f"✅ 已添加{len(documents)}个文档到向量数据库")
-            except Exception as e:
-                print(f"❌ 添加向量数据失败: {e}")
+            # 添加到向量数据库
+            self.vector_store.add_texts(
+                texts=documents,
+                metadatas=metadatas,
+                ids=ids
+            )
     
     def search_relevant_context(self, query: str, user_id: str, 
                               session_id: str = None, k: int = None) -> List[Dict[str, Any]]:
@@ -91,7 +99,7 @@ class VectorStoreService:
         if k is None:
             k = settings.top_k_results
         
-        # 构建过滤条件
+        # 修复ChromaDB查询语法 - 使用$and操作符
         if session_id:
             filter_dict = {
                 "$and": [
@@ -119,11 +127,11 @@ class VectorStoreService:
                     "similarity_score": score
                 })
             
-            print(f"✅ 找到{len(context_results)}个相关上下文")
             return context_results
             
         except Exception as e:
-            print(f"❌ 向量搜索失败: {e}")
+            print(f"向量搜索失败: {e}")
+            # 如果向量搜索失败，返回空结果
             return []
     
     def delete_session_vectors(self, session_id: str):
@@ -136,20 +144,18 @@ class VectorStoreService:
             
             if results["ids"]:
                 self.collection.delete(ids=results["ids"])
-                print(f"✅ 已删除会话 {session_id} 的向量数据")
         except Exception as e:
-            print(f"❌ 删除会话向量失败: {e}")
+            print(f"删除会话向量失败: {e}")
     
     def get_collection_stats(self):
         """获取向量数据库统计信息"""
         try:
-            count = self.collection.count()
             return {
-                "total_documents": count,
+                "total_documents": self.collection.count(),
                 "collection_name": self.collection_name
             }
         except Exception as e:
-            print(f"❌ 获取统计信息失败: {e}")
+            print(f"获取统计信息失败: {e}")
             return {
                 "total_documents": 0,
                 "collection_name": self.collection_name

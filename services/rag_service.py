@@ -3,6 +3,7 @@ from .vector_store import vector_store_service
 from .chat_service import chat_service
 from .openrouter_client import openrouter_client
 from config import settings
+from .character_service import character_service
 
 class RAGService:
     def __init__(self):
@@ -104,9 +105,13 @@ class RAGService:
         for i, ctx in enumerate(relevant_context, 1):
             similarity_score = ctx.get("similarity_score", 0)
             content = ctx["content"]
+            # 添加调试日志
+            print(f"📝 上下文 {i}: {content[:100]}... (相似度: {similarity_score:.3f})")
             context_parts.append(f"相关对话 {i} (相似度: {similarity_score:.3f}):\n{content}")
         
-        return "\n\n".join(context_parts)
+        result = "\n\n".join(context_parts)
+        print(f"🔍 完整上下文:\n{result}")
+        return result
     
     def _build_recent_conversation(self, recent_history: List[Dict]) -> str:
         """构建最近的对话历史"""
@@ -130,11 +135,16 @@ class RAGService:
 
     async def generate_response_with_rag_stream(self, user_id: str, session_id: str, 
                                               message: str):
-        """使用RAG + OpenRouter生成流式回复"""
+        """完整的RAG响应流程：提示词 + 记忆 + 回复 + 保存"""
         try:
             character_id = self._extract_character_id_from_session(session_id)
             
-            # 1. 检索相关的历史上下文
+            # 步骤1：查询角色提示词
+            print(f"📝 步骤1: 查询角色{character_id}的提示词...")
+            character_prompt = await character_service.get_character_prompt(character_id)
+            
+            # 步骤2：检索历史记忆
+            print(f"🧠 步骤2: 检索用户{user_id}的历史记忆...")
             relevant_context = self.vector_store_service.search_relevant_context(
                 query=message,
                 user_id=user_id,
@@ -142,20 +152,28 @@ class RAGService:
                 k=settings.top_k_results
             )
             
-            # 2. 获取最近的对话历史
+            # 步骤3：获取最近对话
+            print(f"💬 步骤3: 获取最近对话历史...")
             recent_history = await self.chat_service.get_recent_messages(
                 session_id=session_id,
                 limit=10
             )
             
-            # 3. 构建提示词
+            # 步骤4：构建完整上下文
+            print(f"🔨 步骤4: 构建AI提示...")
             context_text = self._build_context_from_retrieval(relevant_context)
             recent_conversation = self._build_recent_conversation(recent_history)
             
-            # 4. 构建消息列表
-            messages = self._build_messages(message, context_text, recent_conversation)
+            # 构建包含角色设定和记忆的完整提示
+            messages = self._build_complete_messages(
+                user_message=message,
+                character_prompt=character_prompt,
+                memory_context=context_text,
+                recent_conversation=recent_conversation
+            )
             
-            # 5. 流式生成回复
+            # 步骤5：生成AI回复
+            print(f"🤖 步骤5: 生成AI回复...")
             complete_response = ""
             async for chunk in self.openrouter_client.chat_completion_stream(
                 messages=messages,
@@ -170,20 +188,79 @@ class RAGService:
                     "sources": relevant_context
                 }
             
-            # 6. 保存完整回复（使用SpringBoot的表结构）
+            # 步骤6：保存到数据库和向量库
+            print(f"💾 步骤6: 保存对话到数据库和向量库...")
             await self.chat_service.save_message(user_id, character_id, message, complete_response)
             
-            # 7. 更新向量数据库 - 修正方法名
+            # 步骤7：添加到向量数据库供未来检索
             conversation_pair = [{"user": message, "assistant": complete_response}]
             self.vector_store_service.add_chat_to_vector_store(
                 user_id, session_id, conversation_pair
             )
             
+            print(f"✅ 完整RAG流程完成！")
+            
         except Exception as e:
+            print(f"❌ RAG流程失败: {e}")
             yield {
-                "error": f"RAG流式处理失败: {str(e)}",
+                "error": f"RAG流程失败: {str(e)}",
                 "session_id": session_id
             }
+
+    def _build_complete_messages(self, user_message: str, character_prompt: str, 
+                               memory_context: str, recent_conversation: str) -> List[Dict[str, str]]:
+        """构建包含角色设定和记忆的完整AI提示"""
+        
+        # 提取记忆中的关键信息
+        memory_facts = self._extract_memory_facts(memory_context)
+        
+        system_prompt = f"""{character_prompt}
+
+=== 重要记忆信息 ===
+请特别注意以下从历史对话中提取的重要信息：
+{memory_facts}
+
+=== 详细历史记忆 ===
+{memory_context}
+
+=== 最近的对话 ===
+{recent_conversation}
+
+=== 重要指令 ===
+1. 首先检查"重要记忆信息"中是否有与用户问题直接相关的答案
+2. 如果用户问及姓名、身份、喜好等个人信息，必须使用历史记忆中的具体信息回答
+3. 在保持角色性格的同时，准确使用历史记忆中的事实信息
+4. 如果记忆中有明确答案，不要回避或模糊回答
+
+请基于角色设定和历史记忆回复用户。"""
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ]
+
+    def _extract_memory_facts(self, memory_context: str) -> str:
+        """从记忆上下文中提取关键事实信息"""
+        facts = []
+        
+        # 简单的关键信息提取
+        if "name is" in memory_context.lower() or "叫" in memory_context:
+            # 提取姓名相关信息
+            lines = memory_context.split('\n')
+            for line in lines:
+                if ("name is" in line.lower() or "叫" in line) and "用户:" in line:
+                    facts.append(f"• 用户姓名信息: {line.strip()}")
+        
+        if "我是" in memory_context or "i am" in memory_context.lower():
+            lines = memory_context.split('\n')
+            for line in lines:
+                if ("我是" in line or "i am" in line.lower()) and "用户:" in line:
+                    facts.append(f"• 用户身份信息: {line.strip()}")
+        
+        if facts:
+            return "\n".join(facts)
+        else:
+            return "暂无提取到的关键事实信息"
 
     async def generate_character_response_stream(self, user_id: str, session_id: str, 
                                                message: str, character_prompt: str = ""):

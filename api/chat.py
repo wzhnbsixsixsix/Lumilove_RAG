@@ -233,18 +233,27 @@ async def springboot_stream_proxy(
 async def verify_jwt_token(authorization: str):
     """验证SpringBoot的JWT token"""
     try:
-        # 调用SpringBoot的验证接口
-        async with httpx.AsyncClient() as client:
+        print(f"🔍 验证token: {authorization[:20]}...")
+        
+        # 修正：在创建AsyncClient时配置verify参数
+        async with httpx.AsyncClient(verify=False) as client:
             response = await client.get(
                 "https://54.206.37.109:8443/api/auth/verify",
-                headers={"Authorization": authorization},
-                verify=False  # 跳过SSL验证
+                headers={"Authorization": authorization}
             )
+            print(f"📡 SpringBoot响应状态: {response.status_code}")
+            print(f"📡 SpringBoot响应内容: {response.text}")
+            
             if response.status_code == 200:
                 user_data = response.json()
+                print(f"✅ 用户验证成功: {user_data}")
                 return user_data["id"]  # 返回用户ID
+            else:
+                print(f"❌ 认证失败: {response.status_code} - {response.text}")
+                raise HTTPException(status_code=401, detail=f"Token验证失败: {response.text}")
     except Exception as e:
-        raise HTTPException(status_code=401, detail="Token验证失败")
+        print(f"❌ Token验证异常: {str(e)}")
+        raise HTTPException(status_code=401, detail=f"Token验证失败: {str(e)}")
 
 @router.post("/message/stream/authenticated")
 async def send_message_stream_with_auth(

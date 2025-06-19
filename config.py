@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("DEBUG", "True").lower() == "true"
     
     # RAG设置
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"  # 约22MB
     max_context_length: int = int(os.getenv("MAX_CONTEXT_LENGTH", "4000"))
     top_k_results: int = int(os.getenv("TOP_K_RESULTS", "5"))
     

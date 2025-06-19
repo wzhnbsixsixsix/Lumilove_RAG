@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
+import os
 
 from config import settings
 from models.database import create_tables
@@ -79,9 +80,16 @@ async def root():
     }
 
 if __name__ == "__main__":
+    # 获取当前文件的目录
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    ssl_keyfile = os.path.join(current_dir, "key.pem")
+    ssl_certfile = os.path.join(current_dir, "cert.pem")
+    
     uvicorn.run(
         "main:app",
         host=settings.api_host,
         port=settings.api_port,
-        reload=settings.debug
+        reload=settings.debug,
+        ssl_keyfile=ssl_keyfile,
+        ssl_certfile=ssl_certfile
     ) 
