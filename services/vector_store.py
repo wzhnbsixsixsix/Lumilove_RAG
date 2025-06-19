@@ -86,15 +86,24 @@ class VectorStoreService:
                 print(f"❌ 添加向量数据失败: {e}")
     
     def search_relevant_context(self, query: str, user_id: str, 
-                              session_id: str = None, k: int = None) -> List[Dict[str, Any]]:
-        """搜索相关的上下文 - 临时禁用session过滤进行测试"""
+                               session_id: str = None, k: int = None) -> List[Dict]:
+        """搜索相关的上下文"""
         if k is None:
             k = settings.top_k_results
         
         print(f"🔍 向量搜索参数: query='{query}', user_id='{user_id}', session_id='{session_id}', k={k}")
         
-        # 临时：只使用user_id过滤，不使用session_id
-        filter_dict = {"user_id": user_id}
+        # 构建过滤条件
+        if session_id:
+            filter_dict = {
+                "$and": [
+                    {"user_id": user_id},
+                    {"session_id": session_id}
+                ]
+            }
+        else:
+            filter_dict = {"user_id": user_id}
+        
         print(f"🔍 使用过滤条件: {filter_dict}")
         
         try:
@@ -108,11 +117,20 @@ class VectorStoreService:
             # 格式化结果
             context_results = []
             for doc, score in results:
-                context_results.append({
-                    "content": doc.page_content,
-                    "metadata": doc.metadata,
-                    "similarity_score": score
-                })
+                # 验证结果确实匹配过滤条件
+                doc_user_id = doc.metadata.get('user_id')
+                doc_session_id = doc.metadata.get('session_id')
+                
+                if str(doc_user_id) == str(user_id) and str(doc_session_id) == str(session_id):
+                    context_results.append({
+                        "content": doc.page_content,
+                        "metadata": doc.metadata,
+                        "similarity_score": score
+                    })
+                else:
+                    print(f"⚠️ 警告: 过滤器未正确工作，文档元数据不匹配")
+                    print(f"   期望: user_id='{user_id}', session_id='{session_id}'")
+                    print(f"   实际: user_id='{doc_user_id}', session_id='{doc_session_id}'")
             
             print(f"✅ 找到{len(context_results)}个相关上下文")
             return context_results
